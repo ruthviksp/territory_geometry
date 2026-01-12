@@ -8,6 +8,9 @@ library(spatstat.geom)
 library(spatstat.explore)
 library(tidyverse)
 
+## Get directory where this script lives
+script_dir <- dirname(rstudioapi::getSourceEditorContext()$path)
+
 ## Lookup table to convert file names to dates
 month_lookup <- c(JAN = 1, FEB = 2, MAR = 3, APR = 4,
                   MAY = 5, JUN = 6, JUL = 7, AUG = 8,
@@ -34,7 +37,8 @@ lek_configs <- tibble(
 )
 
 ## Output folder
-dir.create("derived_metrics", showWarnings = FALSE)
+out_dir <- file.path(script_dir, "processed_data")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 ## Build master table of all files across all leks
 files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
@@ -173,5 +177,7 @@ stability_tbl <- map_dfr(unique(files_tbl$lek_id), function(lk) {
 })
 
 ## Save output
-write.csv(stability_tbl, "derived_metrics/stability_ALL.csv", row.names = FALSE)
-message("Saved stability metrics to: derived_metrics/stability_ALL.csv")
+out_file <- file.path(out_dir, "stability_ALL.csv")
+write.csv(stability_tbl, out_file, row.names = FALSE)
+
+message("Saved stability metrics to:", out_file)

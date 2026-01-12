@@ -6,6 +6,9 @@ library(purrr)
 library(spatstat.geom)
 library(dplyr)
 
+## Get directory where this script lives
+script_dir <- dirname(rstudioapi::getSourceEditorContext()$path)
+
 ## Lookup table to convert file names to dates
 month_lookup <- c(JAN = 1, FEB = 2, MAR = 3, APR = 4,
                   MAY = 5, JUN = 6, JUL = 7, AUG = 8,
@@ -38,7 +41,8 @@ lek_configs <- tibble(lek_id   = c("Velavadar_LEK1", "Velavadar_LEK2", "TalChhap
                       shp_file = c("Velavadar_Lek1_Area.shp", "Velavadar_Lek2_Area.shp", "TalChhapar_Area.shp"))
 
 ## Output folder
-dir.create("derived_metrics", showWarnings = FALSE)
+out_dir <- file.path(script_dir, "processed_data")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 ## Build master table of all files across all leks
 files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
@@ -72,8 +76,7 @@ nnd_results <- map_dfr(seq_len(nrow(files_tbl)), function(i) {
 })
 
 ## Save results
-out_file <- file.path("derived_metrics", "nnd_ALL.csv")
-
+out_file <- file.path(out_dir, "nnd_ALL.csv")
 write.csv(nnd_results, out_file, row.names = FALSE)
 
-message("Saved NND metrics to: derived_metrics/nnd_ALL.csv")
+message("Saved NND metrics to: ", out_file)

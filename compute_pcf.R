@@ -9,6 +9,9 @@ library(spatstat.explore)
 library(tidyverse)
 library(zoo)
 
+## Get directory where this script lives
+script_dir <- dirname(rstudioapi::getSourceEditorContext()$path)
+
 ## Lookup table to convert file names to dates
 month_lookup <- c(JAN = 1, FEB = 2, MAR = 3, APR = 4,
                   MAY = 5, JUN = 6, JUL = 7, AUG = 8,
@@ -69,7 +72,8 @@ r_min <- 5.0
 correction <- "translate"
 
 ## Output folder
-dir.create("derived_metrics", showWarnings = FALSE)
+out_dir <- file.path(script_dir, "processed_data")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 ## Build master table of all files across all leks
 files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
@@ -152,11 +156,13 @@ pcf_curves  <- bind_rows(curve_list)
 pcf_summary <- bind_rows(summary_list)
 
 ## Write outputs
-write.csv(pcf_curves, "derived_metrics/pcf_curve_ALL.csv", row.names = FALSE)
-write.csv(pcf_summary, "derived_metrics/pcf_summary_ALL.csv", row.names = FALSE)
+curves_out_file <- file.path(out_dir, "pcf_curve_ALL.csv")
+summary_out_file <- file.path(out_dir, "pcf_summary_ALL.csv")
+write.csv(pcf_curves, curves_out_file, row.names = FALSE)
+write.csv(pcf_summary, summary_out_file, row.names = FALSE)
 
-message("Saved curves to:  derived_metrics/pcf_curve_ALL.csv")
-message("Saved summary to: derived_metrics/pcf_summary_ALL.csv")
+message("Saved curves to:", curves_out_file)
+message("Saved summary to:", summary_out_file)
 
 ## Peak detection parameters
 lower_nnd_mult <- 0.8
@@ -289,6 +295,7 @@ peak_table <- pcf_curves %>%
   }) %>% ungroup()
 
 ## Save peak table
-write.csv(peak_table, "derived_metrics/pcf_peak_table_ALL.csv", row.names = FALSE)
+peaks_out_file <- file.path(out_dir, "pcf_peak_table_ALL.csv")
+write.csv(peak_table, peaks_out_file, row.names = FALSE)
 
-message("Saved peak table to: derived_metrics/pcf_peak_table_ALL.csv")
+message("Saved peak table to:", peaks_out_file)
