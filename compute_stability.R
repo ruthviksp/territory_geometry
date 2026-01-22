@@ -70,10 +70,6 @@ files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
   })
 }) %>% arrange(lek_id, date)
 
-if (nrow(files_tbl) < 2) {
-  stop("Not enough data for stability analysis.")
-}
-
 ## Helper: compute intensity centroid and mode
 compute_intensity_features <- function(lek_polygon, lek_points_sf) {
   
@@ -84,34 +80,19 @@ compute_intensity_features <- function(lek_polygon, lek_points_sf) {
   sigma <- bw.ppl(X)
   lambda_hat <- density.ppp(X, sigma = sigma, edge = TRUE, at = "pixels")
   
-  ## Intensity-weighted centroid (always defined if lambda has mass)
-  w <- lambda_hat$v
-  cx <- sum(lambda_hat$xcol * rowSums(w, na.rm = TRUE), na.rm = TRUE) / sum(w, na.rm = TRUE)
-  cy <- sum(lambda_hat$yrow * colSums(w, na.rm = TRUE), na.rm = TRUE) / sum(w, na.rm = TRUE)
-  
-  centroid <- tibble(cx = cx, cy = cy)
-  
   ## Global mode of intensity surface (robust to NA / flat surfaces)
   v <- lambda_hat$v
   
-  if (all(is.na(v))) {
-    mode <- tibble(mx = NA_real_, my = NA_real_)
-  } else {
-    max_v <- max(v, na.rm = TRUE)
-    idx_all <- which(v == max_v, arr.ind = TRUE)
-    
-    if (nrow(idx_all) == 0) {
-      mode <- tibble(mx = NA_real_, my = NA_real_)
-    } else {
-      idx <- idx_all[1, , drop = FALSE]
-      mode <- tibble(
-        mx = lambda_hat$xcol[idx[2]],
-        my = lambda_hat$yrow[idx[1]]
-      )
-    }
-  }
+  max_v <- max(v, na.rm = TRUE)
+  idx_all <- which(v == max_v, arr.ind = TRUE)
   
-  bind_cols(centroid, mode)
+  idx <- idx_all[1, , drop = FALSE]
+  mode <- tibble(
+    mx = lambda_hat$xcol[idx[2]],
+    my = lambda_hat$yrow[idx[1]]
+  )
+  
+  mode
 }
 
 ## Helper: cross-year nearest-neighbour distances
@@ -130,14 +111,6 @@ cross_year_nn <- function(pts_now, pts_prev, W) {
   d <- c(d1, d2)
   d <- as.numeric(d)
   d <- d[is.finite(d)]
-  
-  if (length(d) == 0) {
-    return(tibble(
-      nn_cross_median = NA_real_,
-      nn_cross_mean   = NA_real_,
-      nn_cross_cv     = NA_real_
-    ))
-  }
   
   tibble(
     nn_cross_median = median(d),
@@ -164,7 +137,6 @@ stability_tbl <- map_dfr(unique(files_tbl$lek_id), function(lk) {
     feat_prev <- compute_intensity_features(lek_polygon, pts_prev)
     feat_now  <- compute_intensity_features(lek_polygon, pts_now)
     
-    centroid_shift <- sqrt((feat_now$cx - feat_prev$cx)^2 + (feat_now$cy - feat_prev$cy)^2)
     mode_shift <- sqrt((feat_now$mx - feat_prev$mx)^2 + (feat_now$my - feat_prev$my)^2)
     
     W <- as.owin(st_geometry(lek_polygon))
@@ -172,7 +144,7 @@ stability_tbl <- map_dfr(unique(files_tbl$lek_id), function(lk) {
     nn_cross <- cross_year_nn(st_coordinates(pts_now), st_coordinates(pts_prev), W)
     
     tibble(lek_id = lk, date_prev = row_prev$date, date_now  = row_now$date,
-           centroid_shift = centroid_shift, mode_shift = mode_shift) %>% bind_cols(nn_cross)
+           mode_shift = mode_shift) %>% bind_cols(nn_cross)
   })
 })
 
