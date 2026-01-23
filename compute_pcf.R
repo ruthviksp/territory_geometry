@@ -202,7 +202,7 @@ detect_peaks <- function(r, g, med_nnd) {
   if (!is.finite(dr) || dr <= 0) dr <- diff(range(r)) / (length(r) - 1)
   
   # Compute prominence, curvature, and width for each peak
-  out <- purrr::pmap_dfr(peaks, function(idx, r_peak, g_peak, peak_height_above_mean) {
+  out <- purrr::pmap_dfr(peaks, function(idx, r_peak, g_peak) {
     
     # Window bounds in index space
     left_limit_r  <- r_peak - win_half_width
@@ -236,32 +236,11 @@ detect_peaks <- function(r, g, med_nnd) {
       peak_curvature <- -gpp
     }
     
-    # Width: full width at half prominence (FWHM-like)
-    # Target height = baseline + 0.5 * prominence
-    if (!is.finite(peak_prominence) || peak_prominence <= 0) {
-      peak_width <- NA_real_
-    } else {
-      target <- baseline + 0.5 * peak_prominence
-      
-      # Find nearest crossings on left and right
-      left_cross_candidates <- left_idx[g[left_idx] <= target]
-      right_cross_candidates <- right_idx[g[right_idx] <= target]
-      
-      if (length(left_cross_candidates) == 0 || length(right_cross_candidates) == 0) {
-        peak_width <- NA_real_
-      } else {
-        left_cross <- max(left_cross_candidates)
-        right_cross <- min(right_cross_candidates)
-        peak_width <- r[right_cross] - r[left_cross]
-      }
-    }
-    
     tibble(
       r_peak = r_peak,
       g_peak = g_peak,
       peak_prominence = peak_prominence,
-      peak_curvature = peak_curvature,
-      peak_width = peak_width
+      peak_curvature = peak_curvature
     )
   })
   
@@ -281,17 +260,33 @@ peak_table <- pcf_curves %>%
   left_join(pcf_summary %>% select(lek_id, date, nn_median), by = c("lek_id", "date")) %>%
   group_by(lek_id, date) %>%
   group_modify(~{
-    
     df <- .x %>% arrange(r)
     med_nnd <- unique(df$nn_median)
     
-    if (length(med_nnd) != 1 || is.na(med_nnd)) return(tibble())
+    if (length(med_nnd) != 1 || is.na(med_nnd)) {
+      return(tibble(
+        r_peak = NA_real_,
+        g_peak = NA_real_,
+        peak_prominence = NA_real_,
+        peak_curvature = NA_real_,
+        n_peaks = NA_integer_
+      ))
+    }
     
     peaks <- detect_peaks(df$r, df$g, med_nnd)
     
-    if (is.null(peaks)) return(tibble())
+    if (is.null(peaks) || nrow(peaks) == 0) {
+      return(tibble(
+        r_peak = NA_real_,
+        g_peak = NA_real_,
+        peak_prominence = NA_real_,
+        peak_curvature = NA_real_,
+        n_peaks = 0L
+      ))
+    }
     
-    peaks
+    peaks %>%
+      mutate(n_peaks = n())
   }) %>% ungroup()
 
 ## Save peak table
