@@ -70,7 +70,7 @@ files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
   })
 }) %>% arrange(lek_id, date)
 
-## Helper: compute intensity centroid and mode
+## compute intensity mode
 compute_intensity_features <- function(lek_polygon, lek_points_sf) {
   
   W <- as.owin(st_geometry(lek_polygon))
@@ -95,7 +95,7 @@ compute_intensity_features <- function(lek_polygon, lek_points_sf) {
   mode
 }
 
-## Helper: cross-year nearest-neighbour distances
+## cross-year nearest-neighbour distances
 cross_year_nn <- function(pts_now, pts_prev, W) {
   
   X_now  <- ppp(pts_now[,1],  pts_now[,2],  window = W)
