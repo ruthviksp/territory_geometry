@@ -43,10 +43,10 @@ compute_pcf <- function(lek_polygon, lek_points_sf, r_vals,
   sigma <- bw.ppl(X)
   lambda_hat <- density.ppp(X, sigma = sigma, edge = TRUE, at = "pixels")
   
-  # Inhomogeneous pair correlation on a common r-grid
+  # Inhomogeneous pair correlation
   g <- pcfinhom(X, lambda = lambda_hat, r = r_vals, correction = correction)
   
-  # Use translate correction values by default
+  # Extract translate correction and apply lower r cutoff
   g_df <- tibble(r = g$r, g = g$trans) %>% filter(r > r_min)
   
   list(g_df = g_df, nn_median = nn_median, sigma = sigma)
@@ -65,7 +65,6 @@ lek_configs <- tibble(
 )
 
 ## Comparability controls
-scale_mode <- "global"
 r_max_mult <- 4
 n_r <- 240
 r_min <- 5.0
@@ -90,21 +89,27 @@ files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
     
     if (length(csv_path) == 0) return(NULL)
     
-    tibble(lek_id = cfg$lek_id, location = cfg$location, suffix = cfg$suffix, shp_file = cfg$shp_file, 
-           data_label = data_label, date = parse_label_to_date(data_label, month_lookup), csv_path = csv_path[1])
+    tibble(
+      lek_id = cfg$lek_id,
+      location = cfg$location,
+      suffix = cfg$suffix,
+      shp_file = cfg$shp_file,
+      data_label = data_label,
+      date = parse_label_to_date(data_label, month_lookup),
+      csv_path = csv_path[1]
+    )
   })
 }) %>% arrange(lek_id, date)
 
-if (nrow(files_tbl) == 0) {
-  stop("No CSV files found across leks.")
-}
+if (nrow(files_tbl) == 0) stop("No CSV files found across leks.")
 
-## First pass: compute a GLOBAL reference median NND for comparability
+## First pass: compute a reference median NND for EACH lek
 nn_pass <- map_dfr(seq_len(nrow(files_tbl)), function(i) {
   
   row <- files_tbl[i, ]
   
-  lek_polygon <- st_read(file.path(root_dir, row$location, row$shp_file), quiet = TRUE) |> st_transform(32643) |> st_zm(drop = TRUE)
+  lek_polygon <- st_read(file.path(root_dir, row$location, row$shp_file), quiet = TRUE) |>
+    st_transform(32643) |> st_zm(drop = TRUE)
   
   df <- read.csv(row$csv_path)
   pts_sf <- st_as_sf(df, coords = c("pos_x", "pos_y"), crs = 32643)
@@ -113,21 +118,16 @@ nn_pass <- map_dfr(seq_len(nrow(files_tbl)), function(i) {
   xy <- st_coordinates(pts_sf)
   X <- ppp(xy[, 1], xy[, 2], window = W)
   
-  tibble(nn_median = median(nndist(X)))
+  tibble(lek_id = row$lek_id, nn_median = median(nndist(X)))
 })
 
-files_tbl <- bind_cols(files_tbl, nn_pass)
+lek_ref_nn <- nn_pass %>%
+  group_by(lek_id) %>%
+  summarise(ref_median_nn = median(nn_median, na.rm = TRUE), .groups = "drop")
 
-ref_median_nn <- median(files_tbl$nn_median, na.rm = TRUE)
+files_tbl <- files_tbl %>% left_join(lek_ref_nn, by = "lek_id")
 
-r_max  <- r_max_mult * ref_median_nn
-r_vals <- seq(0, r_max, length.out = n_r)
-
-message("GLOBAL reference median NND = ", round(ref_median_nn, 2), " m")
-message("Using GLOBAL r_max = ", round(r_max, 2), " m")
-message("Using ", n_r, " r-values")
-
-## Second pass: compute PCFs for all leks on the SAME r-grid
+## Second pass: compute PCFs using a lek-specific r-grid
 curve_list <- list()
 summary_list <- list()
 
@@ -136,23 +136,48 @@ for (i in seq_len(nrow(files_tbl))) {
   row <- files_tbl[i, ]
   message("Processing ", row$lek_id, " : ", row$data_label, " (", i, "/", nrow(files_tbl), ")")
   
-  lek_polygon <- st_read(file.path(root_dir, row$location, row$shp_file), quiet = TRUE) |> st_transform(32643) |> st_zm(drop = TRUE)
+  lek_polygon <- st_read(file.path(root_dir, row$location, row$shp_file), quiet = TRUE) |>
+    st_transform(32643) |> st_zm(drop = TRUE)
   
   df <- read.csv(row$csv_path)
+  n_pts <- nrow(df)
   lek_points <- st_as_sf(df, coords = c("pos_x", "pos_y"), crs = 32643)
   
-  res <- compute_pcf(lek_polygon = lek_polygon, lek_points_sf = lek_points,
-                     r_vals = r_vals, r_min = r_min, correction = correction)
+  # Define lek-specific r range based on its reference median NND
+  r_max <- r_max_mult * row$ref_median_nn
+  r_vals <- seq(0, r_max, length.out = n_r)
   
-  curve_list[[i]] <- res$g_df %>% mutate(lek_id = row$lek_id, data_label = row$data_label,
-                                         date = row$date, r_max_used = r_max, ref_median_nn = ref_median_nn)
+  res <- compute_pcf(
+    lek_polygon = lek_polygon,
+    lek_points_sf = lek_points,
+    r_vals = r_vals,
+    r_min = r_min,
+    correction = correction
+  )
   
-  summary_list[[i]] <- tibble(lek_id = row$lek_id, data_label = row$data_label,
-                              date = row$date, n_points = nrow(df), nn_median = res$nn_median, 
-                              bw_sigma = as.numeric(res$sigma), ref_median_nn = ref_median_nn, r_max_used = r_max)
+  curve_list[[i]] <- res$g_df %>%
+    mutate(
+      lek_id = row$lek_id,
+      data_label = row$data_label,
+      date = row$date,
+      n_points = n_pts,
+      r_max_used = r_max,
+      ref_median_nn = row$ref_median_nn
+    )
+  
+  summary_list[[i]] <- tibble(
+    lek_id = row$lek_id,
+    data_label = row$data_label,
+    date = row$date,
+    n_points = n_pts,
+    nn_median = res$nn_median,
+    bw_sigma = as.numeric(res$sigma),
+    ref_median_nn = row$ref_median_nn,
+    r_max_used = r_max
+  )
 }
 
-pcf_curves  <- bind_rows(curve_list)
+pcf_curves <- bind_rows(curve_list)
 pcf_summary <- bind_rows(summary_list)
 
 ## Write outputs
@@ -161,8 +186,8 @@ summary_out_file <- file.path(out_dir, "pcf_summary_ALL.csv")
 write.csv(pcf_curves, curves_out_file, row.names = FALSE)
 write.csv(pcf_summary, summary_out_file, row.names = FALSE)
 
-message("Saved curves to:", curves_out_file)
-message("Saved summary to:", summary_out_file)
+message("Saved curves to: ", curves_out_file)
+message("Saved summary to: ", summary_out_file)
 
 ## Peak detection parameters
 lower_nnd_mult <- 0.8
@@ -179,7 +204,6 @@ detect_peaks <- function(r, g, med_nnd) {
   
   if (length(r) < 10) return(NULL)
   
-  # Smooth only for locating peaks (NOT for measuring shape)
   g_s <- zoo::rollmean(g, k = smooth_k, fill = NA, align = "center")
   
   is_peak <- g_s > dplyr::lag(g_s) & g_s > dplyr::lead(g_s)
@@ -194,42 +218,34 @@ detect_peaks <- function(r, g, med_nnd) {
     arrange(r_peak) %>%
     filter(c(TRUE, diff(r_peak) >= min_sep_mult * med_nnd))
   
-  # Helper: choose a local window (in r units) around each peak
-  # Use something proportional to spacing so it scales across patterns
   win_half_width <- 0.75 * med_nnd
-  
   dr <- median(diff(r), na.rm = TRUE)
   if (!is.finite(dr) || dr <= 0) dr <- diff(range(r)) / (length(r) - 1)
   
-  # Compute prominence, curvature, and width for each peak
   out <- purrr::pmap_dfr(peaks, function(idx, r_peak, g_peak) {
     
-    # Window bounds in index space
     left_limit_r  <- r_peak - win_half_width
     right_limit_r <- r_peak + win_half_width
     
     left_idx  <- which(r >= left_limit_r & r < r_peak)
     right_idx <- which(r > r_peak & r <= right_limit_r)
     
-    # If we don't have points on both sides, skip shape metrics
     if (length(left_idx) < 2 || length(right_idx) < 2) {
       return(tibble(
         r_peak = r_peak,
         g_peak = g_peak,
         peak_prominence = NA_real_,
-        peak_curvature = NA_real_,
-        peak_width = NA_real_
+        peak_curvature = NA_real_
       ))
     }
     
     left_min  <- min(g[left_idx], na.rm = TRUE)
     right_min <- min(g[right_idx], na.rm = TRUE)
-    baseline  <- max(left_min, right_min)   # conservative baseline
+    baseline  <- max(left_min, right_min)
     
     peak_prominence <- g_peak - baseline
     
-    # Curvature: finite-difference 2nd derivative at idx (needs neighbours)
-    if (idx <= 1 || idx >= length(g)) {
+    if (idx <= 1 || idx >= length(g_s)) {
       peak_curvature <- NA_real_
     } else {
       gpp <- (g_s[idx + 1] - 2 * g_s[idx] + g_s[idx - 1]) / (dr^2)
@@ -244,14 +260,11 @@ detect_peaks <- function(r, g, med_nnd) {
     )
   })
   
-  # Filter peaks using the NEW strength metric.
-  # Replace your old min_prominence threshold with prominence-based threshold.
   out <- out %>%
     filter(!is.na(peak_prominence)) %>%
     filter(peak_prominence >= min_prominence)
   
   if (nrow(out) == 0) return(NULL)
-  
   out
 }
 
@@ -262,6 +275,7 @@ peak_table <- pcf_curves %>%
   group_modify(~{
     df <- .x %>% arrange(r)
     med_nnd <- unique(df$nn_median)
+    n_pts   <- unique(df$n_points)
     
     if (length(med_nnd) != 1 || is.na(med_nnd)) {
       return(tibble(
@@ -269,7 +283,8 @@ peak_table <- pcf_curves %>%
         g_peak = NA_real_,
         peak_prominence = NA_real_,
         peak_curvature = NA_real_,
-        n_peaks = NA_integer_
+        n_peaks = NA_integer_,
+        n_points = n_pts
       ))
     }
     
@@ -281,16 +296,17 @@ peak_table <- pcf_curves %>%
         g_peak = NA_real_,
         peak_prominence = NA_real_,
         peak_curvature = NA_real_,
-        n_peaks = 0L
+        n_peaks = 0L,
+        n_points = n_pts
       ))
     }
     
-    peaks %>%
-      mutate(n_peaks = n())
+    peaks %>% mutate(n_peaks = n(), n_points = n_pts)
   }) %>% ungroup()
 
 ## Save peak table
 peaks_out_file <- file.path(out_dir, "pcf_peak_table_ALL.csv")
 write.csv(peak_table, peaks_out_file, row.names = FALSE)
 
-message("Saved peak table to:", peaks_out_file)
+message("Saved peak table to: ", peaks_out_file)
+
