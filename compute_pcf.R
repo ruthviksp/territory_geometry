@@ -198,40 +198,47 @@ min_sep_mult <- 0.5
 ## Peak detection function
 detect_peaks <- function(r, g, med_nnd) {
   
-  keep <- r >= lower_nnd_mult * med_nnd
+  # Rescale distance by this curve's median nearest-neighbour distance
+  s <- r / med_nnd
+  
+  # Apply lower cutoff in rescaled units
+  keep <- s >= lower_nnd_mult
+  s <- s[keep]
   r <- r[keep]
   g <- g[keep]
   
-  if (length(r) < 10) return(NULL)
+  if (length(s) < 10) return(NULL)
   
+  # Smooth g for robust peak/curvature estimation
   g_s <- zoo::rollmean(g, k = smooth_k, fill = NA, align = "center")
   
+  # Local maxima on the smoothed curve
   is_peak <- g_s > dplyr::lag(g_s) & g_s > dplyr::lead(g_s)
   peak_idx <- which(is_peak)
   if (length(peak_idx) == 0) return(NULL)
   
-  peaks <- tibble(
-    idx = peak_idx,
-    r_peak = r[peak_idx],
-    g_peak = g[peak_idx]
-  ) %>%
-    arrange(r_peak) %>%
-    filter(c(TRUE, diff(r_peak) >= min_sep_mult * med_nnd))
+  # Candidate peaks, filtered by minimum separation in rescaled units
+  peaks <- tibble(idx = peak_idx, s_peak = s[peak_idx], r_peak = r[peak_idx],
+                  g_peak = g[peak_idx]) %>% arrange(s_peak) %>% filter(c(TRUE, diff(s_peak) >= min_sep_mult))
   
-  win_half_width <- 0.75 * med_nnd
-  dr <- median(diff(r), na.rm = TRUE)
-  if (!is.finite(dr) || dr <= 0) dr <- diff(range(r)) / (length(r) - 1)
+  # Prominence window width in rescaled units
+  win_half_width <- 0.75
   
-  out <- purrr::pmap_dfr(peaks, function(idx, r_peak, g_peak) {
+  # Step size on rescaled axis for second-derivative curvature
+  ds <- median(diff(s), na.rm = TRUE)
+  if (!is.finite(ds) || ds <= 0) ds <- diff(range(s)) / (length(s) - 1)
+  
+  out <- purrr::pmap_dfr(peaks, function(idx, s_peak, r_peak, g_peak) {
     
-    left_limit_r  <- r_peak - win_half_width
-    right_limit_r <- r_peak + win_half_width
+    left_limit_s  <- s_peak - win_half_width
+    right_limit_s <- s_peak + win_half_width
     
-    left_idx  <- which(r >= left_limit_r & r < r_peak)
-    right_idx <- which(r > r_peak & r <= right_limit_r)
+    left_idx  <- which(s >= left_limit_s & s < s_peak)
+    right_idx <- which(s > s_peak & s <= right_limit_s)
     
     if (length(left_idx) < 2 || length(right_idx) < 2) {
       return(tibble(
+        s_peak = s_peak,
         r_peak = r_peak,
         g_peak = g_peak,
         peak_prominence = NA_real_,
@@ -245,14 +252,16 @@ detect_peaks <- function(r, g, med_nnd) {
     
     peak_prominence <- g_peak - baseline
     
+    # Curvature: negative second derivative of smoothed g(s)
     if (idx <= 1 || idx >= length(g_s)) {
       peak_curvature <- NA_real_
     } else {
-      gpp <- (g_s[idx + 1] - 2 * g_s[idx] + g_s[idx - 1]) / (dr^2)
+      gpp <- (g_s[idx + 1] - 2 * g_s[idx] + g_s[idx - 1]) / (ds^2)
       peak_curvature <- -gpp
     }
     
     tibble(
+      s_peak = s_peak,
       r_peak = r_peak,
       g_peak = g_peak,
       peak_prominence = peak_prominence,
@@ -260,9 +269,7 @@ detect_peaks <- function(r, g, med_nnd) {
     )
   })
   
-  out <- out %>%
-    filter(!is.na(peak_prominence)) %>%
-    filter(peak_prominence >= min_prominence)
+  out <- out %>% filter(!is.na(peak_prominence)) %>% filter(peak_prominence >= min_prominence)
   
   if (nrow(out) == 0) return(NULL)
   out
@@ -279,6 +286,7 @@ peak_table <- pcf_curves %>%
     
     if (length(med_nnd) != 1 || is.na(med_nnd)) {
       return(tibble(
+        s_peak = NA_real_,
         r_peak = NA_real_,
         g_peak = NA_real_,
         peak_prominence = NA_real_,
@@ -292,6 +300,7 @@ peak_table <- pcf_curves %>%
     
     if (is.null(peaks) || nrow(peaks) == 0) {
       return(tibble(
+        s_peak = NA_real_,
         r_peak = NA_real_,
         g_peak = NA_real_,
         peak_prominence = NA_real_,
@@ -309,4 +318,3 @@ peaks_out_file <- file.path(out_dir, "pcf_peak_table_ALL.csv")
 write.csv(peak_table, peaks_out_file, row.names = FALSE)
 
 message("Saved peak table to: ", peaks_out_file)
-
