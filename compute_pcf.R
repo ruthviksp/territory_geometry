@@ -9,6 +9,7 @@ library(spatstat.explore)
 library(tidyverse)
 library(zoo)
 
+## SETUP / HOUSEKEEPING
 ## Get directory where this script lives
 script_dir <- dirname(rstudioapi::getSourceEditorContext()$path)
 
@@ -21,35 +22,6 @@ parse_label_to_date <- function(data_label, month_lookup) {
   yy <- as.integer(substr(data_label, 1, 2))
   mm <- unname(month_lookup[substr(data_label, 3, 5)])
   as.Date(sprintf("20%02d-%02d-01", yy, mm))
-}
-
-## Compute g_inhom(r)
-compute_pcf <- function(lek_polygon, lek_points_sf, r_vals,
-                        r_min = 1.2, correction = "translate") {
-  
-  # Define observation window
-  W <- as.owin(st_geometry(lek_polygon))
-  
-  # Create point pattern object
-  pts <- st_coordinates(lek_points_sf)
-  X <- ppp(pts[, 1], pts[, 2], window = W)
-  stopifnot(all(inside.owin(X$x, X$y, W)))
-  
-  # Nearest-neighbour distances (for summary)
-  nn <- nndist(X)
-  nn_median <- median(nn)
-  
-  # Intensity estimate (inhomogeneous)
-  sigma <- bw.ppl(X)
-  lambda_hat <- density.ppp(X, sigma = sigma, edge = TRUE, at = "pixels")
-  
-  # Inhomogeneous pair correlation
-  g <- pcfinhom(X, lambda = lambda_hat, r = r_vals, correction = correction)
-  
-  # Extract translate correction and apply lower r cutoff
-  g_df <- tibble(r = g$r, g = g$trans) %>% filter(r > r_min)
-  
-  list(g_df = g_df, nn_median = nn_median, sigma = sigma)
 }
 
 ## Root code and data directory
@@ -89,21 +61,48 @@ files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
     
     if (length(csv_path) == 0) return(NULL)
     
-    tibble(
-      lek_id = cfg$lek_id,
-      location = cfg$location,
-      suffix = cfg$suffix,
-      shp_file = cfg$shp_file,
-      data_label = data_label,
-      date = parse_label_to_date(data_label, month_lookup),
-      csv_path = csv_path[1]
-    )
+    tibble(lek_id = cfg$lek_id,
+           location = cfg$location,
+           suffix = cfg$suffix, 
+           shp_file = cfg$shp_file,
+           data_label = data_label,
+           date = parse_label_to_date(data_label, month_lookup),
+           csv_path = csv_path[1])
   })
 }) %>% arrange(lek_id, date)
 
-if (nrow(files_tbl) == 0) stop("No CSV files found across leks.")
+## HELPER FUNCTIONS
+## Compute g_inhom(r)
+compute_pcf <- function(lek_polygon, lek_points_sf, r_vals,
+                        r_min = 1.2, correction = "translate") {
+  
+  # Define observation window
+  W <- as.owin(st_geometry(lek_polygon))
+  
+  # Create point pattern object
+  pts <- st_coordinates(lek_points_sf)
+  X <- ppp(pts[, 1], pts[, 2], window = W)
+  stopifnot(all(inside.owin(X$x, X$y, W)))
+  
+  # Nearest-neighbour distances (for summary)
+  nn <- nndist(X)
+  nn_median <- median(nn)
+  
+  # Intensity estimate (inhomogeneous)
+  sigma <- bw.ppl(X)
+  lambda_hat <- density.ppp(X, sigma = sigma, edge = TRUE, at = "pixels")
+  
+  # Inhomogeneous pair correlation
+  g <- pcfinhom(X, lambda = lambda_hat, r = r_vals, correction = correction)
+  
+  # Extract translate correction and apply lower r cutoff
+  g_df <- tibble(r = g$r, g = g$trans) %>% filter(r > r_min)
+  
+  list(g_df = g_df, nn_median = nn_median, sigma = sigma)
+}
 
-## First pass: compute a reference median NND for EACH lek
+## MAIN
+## First pass: compute a reference median NND for each lek
 nn_pass <- map_dfr(seq_len(nrow(files_tbl)), function(i) {
   
   row <- files_tbl[i, ]
@@ -121,7 +120,7 @@ nn_pass <- map_dfr(seq_len(nrow(files_tbl)), function(i) {
   tibble(lek_id = row$lek_id, nn_median = median(nndist(X)))
 })
 
-lek_ref_nn <- nn_pass %>%
+lek_ref_nn <- nn_pass %>% 
   group_by(lek_id) %>%
   summarise(ref_median_nn = median(nn_median, na.rm = TRUE), .groups = "drop")
 
@@ -147,34 +146,28 @@ for (i in seq_len(nrow(files_tbl))) {
   r_max <- r_max_mult * row$ref_median_nn
   r_vals <- seq(0, r_max, length.out = n_r)
   
-  res <- compute_pcf(
-    lek_polygon = lek_polygon,
-    lek_points_sf = lek_points,
-    r_vals = r_vals,
-    r_min = r_min,
-    correction = correction
-  )
+  res <- compute_pcf(lek_polygon = lek_polygon,
+                     lek_points_sf = lek_points,
+                     r_vals = r_vals,
+                     r_min = r_min,
+                     correction = correction)
   
   curve_list[[i]] <- res$g_df %>%
-    mutate(
-      lek_id = row$lek_id,
-      data_label = row$data_label,
-      date = row$date,
-      n_points = n_pts,
-      r_max_used = r_max,
-      ref_median_nn = row$ref_median_nn
-    )
+    mutate(lek_id = row$lek_id,
+           data_label = row$data_label,
+           date = row$date,
+           n_points = n_pts,
+           r_max_used = r_max,
+           ref_median_nn = row$ref_median_nn)
   
-  summary_list[[i]] <- tibble(
-    lek_id = row$lek_id,
-    data_label = row$data_label,
-    date = row$date,
-    n_points = n_pts,
-    nn_median = res$nn_median,
-    bw_sigma = as.numeric(res$sigma),
-    ref_median_nn = row$ref_median_nn,
-    r_max_used = r_max
-  )
+  summary_list[[i]] <- tibble(lek_id = row$lek_id,
+                              data_label = row$data_label,
+                              date = row$date,
+                              n_points = n_pts,
+                              nn_median = res$nn_median,
+                              bw_sigma = as.numeric(res$sigma),
+                              ref_median_nn = row$ref_median_nn,
+                              r_max_used = r_max)
 }
 
 pcf_curves <- bind_rows(curve_list)
@@ -236,16 +229,6 @@ detect_peaks <- function(r, g, med_nnd) {
     left_idx  <- which(s >= left_limit_s & s < s_peak)
     right_idx <- which(s > s_peak & s <= right_limit_s)
     
-    if (length(left_idx) < 2 || length(right_idx) < 2) {
-      return(tibble(
-        s_peak = s_peak,
-        r_peak = r_peak,
-        g_peak = g_peak,
-        peak_prominence = NA_real_,
-        peak_curvature = NA_real_
-      ))
-    }
-    
     left_min  <- min(g[left_idx], na.rm = TRUE)
     right_min <- min(g[right_idx], na.rm = TRUE)
     baseline  <- max(left_min, right_min)
@@ -260,19 +243,14 @@ detect_peaks <- function(r, g, med_nnd) {
       peak_curvature <- -gpp
     }
     
-    tibble(
-      s_peak = s_peak,
-      r_peak = r_peak,
-      g_peak = g_peak,
-      peak_prominence = peak_prominence,
-      peak_curvature = peak_curvature
-    )
+    tibble(s_peak = s_peak,
+           r_peak = r_peak,
+           g_peak = g_peak,
+           peak_prominence = peak_prominence,
+           peak_curvature = peak_curvature)
   })
   
   out <- out %>% filter(!is.na(peak_prominence)) %>% filter(peak_prominence >= min_prominence)
-  
-  if (nrow(out) == 0) return(NULL)
-  out
 }
 
 ## Apply peak detection to all lek × date PCFs
@@ -284,30 +262,16 @@ peak_table <- pcf_curves %>%
     med_nnd <- unique(df$nn_median)
     n_pts   <- unique(df$n_points)
     
-    if (length(med_nnd) != 1 || is.na(med_nnd)) {
-      return(tibble(
-        s_peak = NA_real_,
-        r_peak = NA_real_,
-        g_peak = NA_real_,
-        peak_prominence = NA_real_,
-        peak_curvature = NA_real_,
-        n_peaks = NA_integer_,
-        n_points = n_pts
-      ))
-    }
-    
     peaks <- detect_peaks(df$r, df$g, med_nnd)
     
     if (is.null(peaks) || nrow(peaks) == 0) {
-      return(tibble(
-        s_peak = NA_real_,
-        r_peak = NA_real_,
-        g_peak = NA_real_,
-        peak_prominence = NA_real_,
-        peak_curvature = NA_real_,
-        n_peaks = 0L,
-        n_points = n_pts
-      ))
+      return(tibble(s_peak = NA_real_,
+                    r_peak = NA_real_,
+                    g_peak = NA_real_,
+                    peak_prominence = NA_real_,
+                    peak_curvature = NA_real_,
+                    n_peaks = 0L,
+                    n_points = n_pts))
     }
     
     peaks %>% mutate(n_peaks = n(), n_points = n_pts)
