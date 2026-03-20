@@ -6,6 +6,7 @@ library(purrr)
 library(spatstat.geom)
 library(dplyr)
 
+## SETUP / HOUSEKEEPING
 ## Get directory where this script lives
 script_dir <- dirname(rstudioapi::getSourceEditorContext()$path)
 
@@ -18,17 +19,6 @@ parse_label_to_date <- function(data_label, month_lookup) {
   yy <- as.integer(substr(data_label, 1, 2))
   mm <- unname(month_lookup[substr(data_label, 3, 5)])
   as.Date(sprintf("20%02d-%02d-01", yy, mm))
-}
-
-## Compute NND metrics
-compute_nnd <- function(lek_polygon, lek_points) {
-  W <- as.owin(st_geometry(lek_polygon))
-  pts <- st_coordinates(lek_points)
-  X <- ppp(pts[,1], pts[,2], window = W)
-  
-  nn <- nndist(X)
-  
-  tibble(nnd_mean = mean(nn), nnd_median = median(nn), nnd_sd = sd(nn), nnd_count = length(nn), nnd_cv = sd(nn)/mean(nn))
 }
 
 ## Root code and data directory
@@ -63,6 +53,19 @@ files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
   })
 }) %>% arrange(lek_id, date)
 
+## HELPER FUNCTIONS
+## Compute NND metrics
+compute_nnd <- function(lek_polygon, lek_points) {
+  W <- as.owin(st_geometry(lek_polygon))
+  pts <- st_coordinates(lek_points)
+  X <- ppp(pts[,1], pts[,2], window = W)
+  
+  nn <- nndist(X)
+  
+  tibble(nnd_mean = mean(nn), nnd_median = median(nn), nnd_sd = sd(nn), nnd_count = length(nn), nnd_cv = sd(nn)/mean(nn))
+}
+
+## MAIN
 ## Compute NND metrics for all leks and all dates
 nnd_results <- map_dfr(seq_len(nrow(files_tbl)), function(i) {
   row <- files_tbl[i, ]

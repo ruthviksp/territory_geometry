@@ -31,7 +31,7 @@ root_dir <- "/Users/vivekhsridhar/Library/Mobile Documents/com~apple~CloudDocs/D
 setwd(root_dir)
 
 ## Output folder
-out_dir <- file.path(script_dir, "processed_data", "crossyear_nnd_gridmask_all_leks")
+out_dir <- file.path(script_dir, "processed_data")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 ## Lek configurations
@@ -74,7 +74,7 @@ kde_dimyx <- 256
 min_points_kde <- 5
 
 ## Null simulation settings
-n_sims <- 9
+n_sims <- 1000
 set.seed(123)
 
 ## HELPER FUNCTIONS
@@ -342,7 +342,7 @@ sim_tbl_all <- bind_rows(sim_list) %>% arrange(lek_id, date_curr, sim)
 
 ## Export dataframes
 summary_tbl <- summary_tbl %>%
-  transmute(lek_id, date_prev, date_now = date_curr, 
+  transmute(lek_id, date_prev, date_now = date_curr, n_prev = n_prev, n_curr = n_curr, 
             mean_crossyear_nnd = obs_mean_nnd, median_crossyear_nnd = obs_median_nnd)
 
 simulation_tbl <- sim_tbl_all %>%
@@ -356,103 +356,4 @@ crossyear_nnd_tbl <- simulation_tbl %>%
 
 write_csv(summary_tbl, file.path(out_dir, "crossyear_nnd_summary.csv"))
 write_csv(pointwise_tbl, file.path(out_dir, "crossyear_nnd_pointwise.csv"))
-write_csv(crossyear_nnd_tbl, file.path(out_dir, "crossyear_nnd_export_for_plotting.csv"))
-
-## ---------- Plot mean NND over time ----------
-
-p_mean <- ggplot(summary_tbl, aes(x = date_curr)) +
-  geom_ribbon(
-    aes(ymin = rand_mean_nnd_q025, ymax = rand_mean_nnd_q975),
-    fill = "grey85"
-  ) +
-  geom_ribbon(
-    aes(ymin = rand_mean_nnd_q25, ymax = rand_mean_nnd_q75),
-    fill = "grey70"
-  ) +
-  geom_line(
-    aes(y = rand_mean_nnd_q50),
-    color = "grey30",
-    linewidth = 1,
-    linetype = "dashed"
-  ) +
-  geom_line(
-    aes(y = obs_mean_nnd),
-    color = "#0072B2",
-    linewidth = 1.2
-  ) +
-  geom_point(
-    aes(y = obs_mean_nnd),
-    color = "#0072B2",
-    size = 2.8
-  ) +
-  labs(
-    title = "Cross-year mean NND across leks",
-    subtitle = paste0(
-      "Observed year t to t-1 nearest-neighbour distance after restricting year t points to the previous-year KDE core grid mask (core_prob = ",
-      core_prob, "). Grey ribbons show the null from random placement within that same mask."
-    ),
-    x = "Year transition",
-    y = "Mean cross-year NND (m)"
-  ) +
-  scale_x_date(
-    breaks = sort(unique(summary_tbl$date_curr)),
-    labels = format(sort(unique(summary_tbl$date_curr)), "%Y")
-  ) +
-  theme_classic() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1)
-  ) +
-  facet_wrap(~ lek_id, scales = "free_x")
-
-p_mean
-
-
-## ---------- Plot median NND over time ----------
-
-p_median <- ggplot(summary_tbl, aes(x = date_curr)) +
-  geom_ribbon(
-    aes(ymin = rand_median_nnd_q025, ymax = rand_median_nnd_q975),
-    fill = "grey85"
-  ) +
-  geom_ribbon(
-    aes(ymin = rand_median_nnd_q25, ymax = rand_median_nnd_q75),
-    fill = "grey70"
-  ) +
-  geom_line(
-    aes(y = rand_median_nnd_q50),
-    color = "grey30",
-    linewidth = 1,
-    linetype = "dashed"
-  ) +
-  geom_line(
-    aes(y = obs_median_nnd),
-    color = "#D55E00",
-    linewidth = 1.2
-  ) +
-  geom_point(
-    aes(y = obs_median_nnd),
-    color = "#D55E00",
-    size = 2.8
-  ) +
-  labs(
-    title = "Cross-year median NND across leks",
-    subtitle = paste0(
-      "Observed year t to t-1 nearest-neighbour distance after restricting year t points to the previous-year KDE core grid mask (core_prob = ",
-      core_prob, "). Grey ribbons show the null from random placement within that same mask."
-    ),
-    x = "Year transition",
-    y = "Median cross-year NND (m)"
-  ) +
-  scale_x_date(
-    breaks = sort(unique(summary_tbl$date_curr)),
-    labels = format(sort(unique(summary_tbl$date_curr)), "%Y")
-  ) +
-  theme_classic() +
-  theme(
-    axis.text.x = element_text(angle = 45, hjust = 1)
-  ) +
-  facet_wrap(~ lek_id, scales = "free_x")
-
-p_median
-
-message("Saved grid-mask cross-year NND outputs and plots to: ", out_dir)
+write_csv(crossyear_nnd_tbl, file.path(out_dir, "crossyear_nnd_with_randomisations.csv"))
