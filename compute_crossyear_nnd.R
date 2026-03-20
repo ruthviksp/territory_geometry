@@ -342,7 +342,7 @@ sim_tbl_all <- bind_rows(sim_list) %>% arrange(lek_id, date_curr, sim)
 
 ## Export dataframes
 summary_tbl <- summary_tbl %>%
-  transmute(lek_id, date_prev, date_now = date_curr, n_prev = n_prev, n_curr = n_curr, 
+  transmute(lek_id, date_prev, date_now = date_curr, n_prev = n_prev, n_curr = n_curr, n_curr_in_prev_core = n_curr_in_prev_core,
             mean_crossyear_nnd = obs_mean_nnd, median_crossyear_nnd = obs_median_nnd)
 
 simulation_tbl <- sim_tbl_all %>%
@@ -351,7 +351,7 @@ simulation_tbl <- sim_tbl_all %>%
 
 crossyear_nnd_tbl <- simulation_tbl %>%
   left_join(summary_tbl, by = c("lek_id", "date_prev", "date_now")) %>%
-  relocate(lek_id, date_prev, date_now, sim, mean_crossyear_nnd, median_crossyear_nnd,
+  relocate(lek_id, date_prev, date_now, n_curr_in_prev_core, sim, mean_crossyear_nnd, median_crossyear_nnd,
            mean_crossyear_nnd_rand, median_crossyear_nnd_rand)
 
 write_csv(summary_tbl, file.path(out_dir, "crossyear_nnd_summary.csv"))
