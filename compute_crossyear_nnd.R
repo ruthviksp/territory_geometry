@@ -71,7 +71,7 @@ files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
 ## KDE settings
 core_prob <- 0.75
 kde_dimyx <- 256
-min_points_kde <- 5
+min_points_kde <- 10
 
 ## Null simulation settings
 n_sims <- 1000
@@ -187,15 +187,62 @@ nnd <- function(from_pts, to_pts) {
   as.numeric(dmin)
 }
 
+## Translate points by a fixed distance in a random direction
+translate_points_random <- function(pts_sf, shift_dist) {
+  
+  # Draw a random direction and shift all points by the same offset
+  theta <- runif(1, 0, 2 * pi)
+  dx <- shift_dist * cos(theta)
+  dy <- shift_dist * sin(theta)
+  
+  pts_xy <- st_coordinates(pts_sf)
+  pts_shift <- tibble(x = pts_xy[, 1] + dx, y = pts_xy[, 2] + dy)
+  
+  st_as_sf(pts_shift, coords = c("x", "y"), crs = st_crs(pts_sf))
+}
+
+## Rotate points by a random angle around their centroid
+rotate_points_random <- function(pts_sf, angle_max = pi / 6) {
+  
+  # Draw a random rotation angle and rotate all points around the centroid
+  theta <- runif(1, -angle_max, angle_max)
+  pts_xy <- st_coordinates(pts_sf)
+  ctr <- colMeans(pts_xy)
+  pts_ctr <- sweep(pts_xy, 2, ctr, "-")
+  
+  rot_mat <- matrix(c(cos(theta), -sin(theta), sin(theta), cos(theta)), nrow = 2, byrow = TRUE)
+  pts_rot <- pts_ctr %*% t(rot_mat)
+  pts_rot <- sweep(pts_rot, 2, ctr, "+")
+  pts_rot <- tibble(x = pts_rot[, 1], y = pts_rot[, 2])
+  
+  st_as_sf(pts_rot, coords = c("x", "y"), crs = st_crs(pts_sf))
+}
+
+## Translate and rotate points
+transform_points_random <- function(pts_sf, shift_dist, angle_max = pi / 6) {
+  pts_trans <- translate_points_random(pts_sf, shift_dist = shift_dist)
+  rotate_points_random(pts_trans, angle_max = angle_max)
+}
+
 ## Simulate random points within the core region from the previous year and compute nearest-neighbour distances
-simulate_random_crossyear_nnd <- function(n_pts, kde_grid, prev_pts, n_sims = 999, crs_use) {
+simulate_random_crossyear_nnd <- function(n_pts, kde_grid, prev_pts, curr_pts, n_sims = 999, crs_use) {
+  
+  # Compute the shift distance as half of the median nearest-neighbour distance within the previous image
+  prev_dmat <- st_distance(prev_pts, prev_pts)
+  diag(prev_dmat) <- Inf
+  prev_nnd <- apply(prev_dmat, 1, min)
+  shift_dist <- median(as.numeric(prev_nnd)) / 2
   
   # Repeat the randomisation and summarise the NNDs from each simulation
   map_dfr(seq_len(n_sims), function(s) {
     rand_pts <- sample_random_points_in_kde_core(n_pts = n_pts, kde_grid = kde_grid, crs_use = crs_use)
     rand_nnd <- nnd(rand_pts, prev_pts)
     
-    tibble(sim = s, mean_nnd_rand = mean(rand_nnd), median_nnd_rand = median(rand_nnd))
+    prev_transform <- transform_points_random(prev_pts, shift_dist = shift_dist, angle_max = pi / 6)
+    transform_nnd <- nnd(curr_pts, prev_transform)
+    
+    tibble(sim = s, mean_nnd_rand = mean(rand_nnd), median_nnd_rand = median(rand_nnd),
+           mean_nnd_transform_rand = mean(transform_nnd), median_nnd_transform_rand = median(transform_nnd))
   })
 }
 
@@ -290,7 +337,7 @@ for (lek in names(files_by_lek)) {
     
     # Simulate random points within the same KDE core and compute NNDs
     sim_tbl <- simulate_random_crossyear_nnd(n_pts = nrow(pts_curr_in_core), kde_grid = kde_prev,
-                                             prev_pts = pts_prev, n_sims = n_sims, crs_use = st_crs(pts_prev))
+                                             prev_pts = pts_prev, curr_pts = pts_curr_in_core, n_sims = n_sims, crs_use = st_crs(pts_prev))
     
     # Observed summary statistics
     obs_mean <- mean(obs_nnd)
@@ -347,12 +394,15 @@ summary_tbl <- summary_tbl %>%
 
 simulation_tbl <- sim_tbl_all %>%
   transmute(lek_id, date_prev, date_now = date_curr, sim, 
-            mean_crossyear_nnd_rand = mean_nnd_rand, median_crossyear_nnd_rand = median_nnd_rand)
+            mean_crossyear_nnd_rand = mean_nnd_rand, median_crossyear_nnd_rand = median_nnd_rand,
+            mean_crossyear_nnd_transform_rand = mean_nnd_transform_rand,
+            median_crossyear_nnd_transform_rand = median_nnd_transform_rand)
 
 crossyear_nnd_tbl <- simulation_tbl %>%
   left_join(summary_tbl, by = c("lek_id", "date_prev", "date_now")) %>%
   relocate(lek_id, date_prev, date_now, n_curr_in_prev_core, sim, mean_crossyear_nnd, median_crossyear_nnd,
-           mean_crossyear_nnd_rand, median_crossyear_nnd_rand)
+           mean_crossyear_nnd_rand, median_crossyear_nnd_rand,
+           mean_crossyear_nnd_transform_rand, median_crossyear_nnd_transform_rand)
 
 write_csv(summary_tbl, file.path(out_dir, "crossyear_nnd_summary.csv"))
 write_csv(pointwise_tbl, file.path(out_dir, "crossyear_nnd_pointwise.csv"))
