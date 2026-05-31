@@ -7,6 +7,7 @@ library(purrr)
 library(dplyr)
 library(readr)
 library(tibble)
+library(tidyr)
 library(ggplot2)
 library(spatstat.geom)
 library(spatstat.explore)
@@ -233,17 +234,30 @@ simulate_random_crossyear_nnd <- function(n_pts, kde_grid, prev_pts, curr_pts, n
   prev_nnd <- apply(prev_dmat, 1, min)
   shift_dist <- median(as.numeric(prev_nnd)) / 2
   
-  # Repeat the randomisation and summarise the NNDs from each simulation
-  map_dfr(seq_len(n_sims), function(s) {
+  # Repeat the randomisation and store point-level NNDs from each simulation
+  sim_pointwise <- map_dfr(seq_len(n_sims), function(s) {
     rand_pts <- sample_random_points_in_kde_core(n_pts = n_pts, kde_grid = kde_grid, crs_use = crs_use)
     rand_nnd <- nnd(rand_pts, prev_pts)
     
     prev_transform <- transform_points_random(prev_pts, shift_dist = shift_dist, angle_max = pi / 6)
     transform_nnd <- nnd(curr_pts, prev_transform)
     
-    tibble(sim = s, mean_nnd_rand = mean(rand_nnd), median_nnd_rand = median(rand_nnd),
-           mean_nnd_transform_rand = mean(transform_nnd), median_nnd_transform_rand = median(transform_nnd))
+    bind_rows(tibble(sim = s, null_type = "complete_randomisation", point_id = seq_along(rand_nnd), nnd_to_prev = rand_nnd),
+              tibble(sim = s, null_type = "translate_rotate", point_id = seq_along(transform_nnd), nnd_to_prev = transform_nnd))
   })
+  
+  # Summarise the point-level NNDs from each simulation
+  sim_summary <- sim_pointwise %>%
+    group_by(sim, null_type) %>%
+    summarise(mean_nnd = mean(nnd_to_prev), median_nnd = median(nnd_to_prev), .groups = "drop") %>%
+    tidyr::pivot_wider(names_from = null_type, values_from = c(mean_nnd, median_nnd)) %>%
+    transmute(sim = sim,
+              mean_nnd_rand = mean_nnd_complete_randomisation,
+              median_nnd_rand = median_nnd_complete_randomisation,
+              mean_nnd_transform_rand = mean_nnd_translate_rotate,
+              median_nnd_transform_rand = median_nnd_translate_rotate)
+  
+  list(summary = sim_summary, pointwise = sim_pointwise)
 }
 
 ## MAIN
@@ -299,6 +313,7 @@ names(pts_by_lek_year) <- paste(files_tbl$lek_id, files_tbl$date, sep = "__")
 summary_list <- list()
 pointwise_list <- list()
 sim_list <- list()
+sim_pointwise_list <- list()
 
 ## Split the file table by lek
 files_by_lek <- split(files_tbl, files_tbl$lek_id)
@@ -336,8 +351,10 @@ for (lek in names(files_by_lek)) {
     obs_nnd <- nnd(pts_curr_in_core, pts_prev)
     
     # Simulate random points within the same KDE core and compute NNDs
-    sim_tbl <- simulate_random_crossyear_nnd(n_pts = nrow(pts_curr_in_core), kde_grid = kde_prev,
+    sim_out <- simulate_random_crossyear_nnd(n_pts = nrow(pts_curr_in_core), kde_grid = kde_prev,
                                              prev_pts = pts_prev, curr_pts = pts_curr_in_core, n_sims = n_sims, crs_use = st_crs(pts_prev))
+    sim_tbl <- sim_out$summary
+    sim_pointwise_tbl <- sim_out$pointwise
     
     # Observed summary statistics
     obs_mean <- mean(obs_nnd)
@@ -380,12 +397,17 @@ for (lek in names(files_by_lek)) {
     # Store simulation output for the same transition
     sim_list[[length(sim_list) + 1]] <- sim_tbl %>%
       mutate(lek_id = lek, date_prev = date_prev, date_curr = date_curr)
+    
+    # Store point-level simulation output for the same transition
+    sim_pointwise_list[[length(sim_pointwise_list) + 1]] <- sim_pointwise_tbl %>%
+      mutate(lek_id = lek, date_prev = date_prev, date_curr = date_curr)
   }
 }
 
 summary_tbl <- bind_rows(summary_list) %>% arrange(lek_id, date_curr)
 pointwise_tbl <- bind_rows(pointwise_list) %>% arrange(lek_id, date_curr)
 sim_tbl_all <- bind_rows(sim_list) %>% arrange(lek_id, date_curr, sim)
+sim_pointwise_tbl_all <- bind_rows(sim_pointwise_list) %>% arrange(lek_id, date_curr, null_type, sim, point_id)
 
 ## Export dataframes
 summary_tbl <- summary_tbl %>%
@@ -404,6 +426,10 @@ crossyear_nnd_tbl <- simulation_tbl %>%
            mean_crossyear_nnd_rand, median_crossyear_nnd_rand,
            mean_crossyear_nnd_transform_rand, median_crossyear_nnd_transform_rand)
 
+sim_pointwise_tbl_all <- sim_pointwise_tbl_all %>%
+  transmute(lek_id, date_prev, date_now = date_curr, sim, null_type, point_id, nnd_to_prev)
+
 write_csv(summary_tbl, file.path(out_dir, "crossyear_nnd_summary.csv"))
 write_csv(pointwise_tbl, file.path(out_dir, "crossyear_nnd_pointwise.csv"))
 write_csv(crossyear_nnd_tbl, file.path(out_dir, "crossyear_nnd_with_randomisations.csv"))
+write_csv(sim_pointwise_tbl_all, file.path(out_dir, "crossyear_nnd_pointwise_randomisations.csv"))
