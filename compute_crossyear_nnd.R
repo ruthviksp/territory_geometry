@@ -7,7 +7,6 @@ library(purrr)
 library(dplyr)
 library(readr)
 library(tibble)
-library(tidyr)
 library(ggplot2)
 library(spatstat.geom)
 library(spatstat.explore)
@@ -147,6 +146,13 @@ subset_points_to_kde_core <- function(pts_sf, kde_grid) {
   pts_sf[inside, ]
 }
 
+## Compute distance of points from the KDE mode
+distance_to_kde_mode <- function(pts_sf, kde_grid, crs_use) {
+  mode_cell <- kde_grid$kde_df %>% filter(is.finite(p)) %>% slice_max(order_by = p, n = 1, with_ties = FALSE)
+  mode_pt <- st_as_sf(mode_cell, coords = c("x", "y"), crs = crs_use)
+  as.numeric(st_distance(pts_sf, mode_pt))
+}
+
 ## Estimate KDE bandwidth for a given point pattern
 get_kde_sigma <- function(pts_sf, lek_polygon) {
   
@@ -161,23 +167,6 @@ get_kde_sigma <- function(pts_sf, lek_polygon) {
   sigma <- as.numeric(sigma)[1]
   
   return(sigma)
-}
-
-## Sample random points uniformly within the core region (KDE mask)
-sample_random_points_in_kde_core <- function(n_pts, kde_grid, crs_use) {
-  
-  # Only keep cells within the KDE core mask
-  core_cells <- kde_grid$kde_df %>% filter(in_core)
-  
-  # Sample core cells with replacement
-  samp_idx <- sample(seq_len(nrow(core_cells)), size = n_pts, replace = TRUE)
-  samp_cells <- core_cells[samp_idx, ]
-  
-  # Draw a random point within the sampled cell
-  x_rand <- runif(n_pts, min = samp_cells$x - kde_grid$xstep / 2, max = samp_cells$x + kde_grid$xstep / 2)
-  y_rand <- runif(n_pts, min = samp_cells$y - kde_grid$ystep / 2, max = samp_cells$y + kde_grid$ystep / 2)
-  
-  st_as_sf(tibble(x = x_rand, y = y_rand), coords = c("x", "y"), crs = crs_use)
 }
 
 ## Compute nearest-neighbour distance between points
@@ -225,38 +214,31 @@ transform_points_random <- function(pts_sf, shift_dist, angle_max = pi / 6) {
   rotate_points_random(pts_trans, angle_max = angle_max)
 }
 
-## Simulate random points within the core region from the previous year and compute nearest-neighbour distances
-simulate_random_crossyear_nnd <- function(n_pts, kde_grid, prev_pts, curr_pts, n_sims = 999, crs_use) {
-  
+## Simulate transformed previous-year points and compute nearest-neighbour distances
+simulate_transform_crossyear_nnd <- function(prev_pts, curr_pts, n_sims = 999) {
+
   # Compute the shift distance as half of the median nearest-neighbour distance within the previous image
   prev_dmat <- st_distance(prev_pts, prev_pts)
   diag(prev_dmat) <- Inf
   prev_nnd <- apply(prev_dmat, 1, min)
   shift_dist <- median(as.numeric(prev_nnd)) / 2
-  
-  # Repeat the randomisation and store point-level NNDs from each simulation
+
+  # Repeat the translate-rotate randomisation and store point-level NNDs from each simulation
   sim_pointwise <- map_dfr(seq_len(n_sims), function(s) {
-    rand_pts <- sample_random_points_in_kde_core(n_pts = n_pts, kde_grid = kde_grid, crs_use = crs_use)
-    rand_nnd <- nnd(rand_pts, prev_pts)
-    
     prev_transform <- transform_points_random(prev_pts, shift_dist = shift_dist, angle_max = pi / 6)
     transform_nnd <- nnd(curr_pts, prev_transform)
-    
-    bind_rows(tibble(sim = s, null_type = "complete_randomisation", point_id = seq_along(rand_nnd), nnd_to_prev = rand_nnd),
-              tibble(sim = s, null_type = "translate_rotate", point_id = seq_along(transform_nnd), nnd_to_prev = transform_nnd))
+
+    tibble(sim = s, point_id = seq_along(transform_nnd),
+           nnd_to_prev = transform_nnd)
   })
-  
-  # Summarise the point-level NNDs from each simulation
+
+  # Summarise point-level NNDs from each simulation
   sim_summary <- sim_pointwise %>%
-    group_by(sim, null_type) %>%
-    summarise(mean_nnd = mean(nnd_to_prev), median_nnd = median(nnd_to_prev), .groups = "drop") %>%
-    tidyr::pivot_wider(names_from = null_type, values_from = c(mean_nnd, median_nnd)) %>%
-    transmute(sim = sim,
-              mean_nnd_rand = mean_nnd_complete_randomisation,
-              median_nnd_rand = median_nnd_complete_randomisation,
-              mean_nnd_transform_rand = mean_nnd_translate_rotate,
-              median_nnd_transform_rand = median_nnd_translate_rotate)
-  
+    group_by(sim) %>%
+    summarise(mean_nnd_transform_rand = mean(nnd_to_prev),
+              median_nnd_transform_rand = median(nnd_to_prev),
+              .groups = "drop")
+
   list(summary = sim_summary, pointwise = sim_pointwise)
 }
 
@@ -313,7 +295,7 @@ names(pts_by_lek_year) <- paste(files_tbl$lek_id, files_tbl$date, sep = "__")
 summary_list <- list()
 pointwise_list <- list()
 sim_list <- list()
-sim_pointwise_list <- list()
+pointwise_randomisation_list <- list()
 
 ## Split the file table by lek
 files_by_lek <- split(files_tbl, files_tbl$lek_id)
@@ -349,10 +331,10 @@ for (lek in names(files_by_lek)) {
     
     # Compute nearest-neighbour distance from current to previous points
     obs_nnd <- nnd(pts_curr_in_core, pts_prev)
+    dist_from_centre <- distance_to_kde_mode(pts_curr_in_core, kde_prev, crs_use = st_crs(pts_prev))
     
-    # Simulate random points within the same KDE core and compute NNDs
-    sim_out <- simulate_random_crossyear_nnd(n_pts = nrow(pts_curr_in_core), kde_grid = kde_prev,
-                                             prev_pts = pts_prev, curr_pts = pts_curr_in_core, n_sims = n_sims, crs_use = st_crs(pts_prev))
+    # Simulate transformed previous-year points and compute NNDs
+    sim_out <- simulate_transform_crossyear_nnd(prev_pts = pts_prev, curr_pts = pts_curr_in_core, n_sims = n_sims)
     sim_tbl <- sim_out$summary
     sim_pointwise_tbl <- sim_out$pointwise
     
@@ -360,54 +342,56 @@ for (lek in names(files_by_lek)) {
     obs_mean <- mean(obs_nnd)
     obs_median <- median(obs_nnd)
     
-    # Qunatiles of simulated mean NNDs
-    rand_mean_q025 <- quantile(sim_tbl$mean_nnd_rand, 0.025, na.rm = TRUE)
-    rand_mean_q25  <- quantile(sim_tbl$mean_nnd_rand, 0.25, na.rm = TRUE)
-    rand_mean_q50  <- quantile(sim_tbl$mean_nnd_rand, 0.50, na.rm = TRUE)
-    rand_mean_q75  <- quantile(sim_tbl$mean_nnd_rand, 0.75, na.rm = TRUE)
-    rand_mean_q975 <- quantile(sim_tbl$mean_nnd_rand, 0.975, na.rm = TRUE)
-    
-    # Quantiles of simulated median NNDs
-    rand_median_q025 <- quantile(sim_tbl$median_nnd_rand, 0.025, na.rm = TRUE)
-    rand_median_q25  <- quantile(sim_tbl$median_nnd_rand, 0.25, na.rm = TRUE)
-    rand_median_q50  <- quantile(sim_tbl$median_nnd_rand, 0.50, na.rm = TRUE)
-    rand_median_q75  <- quantile(sim_tbl$median_nnd_rand, 0.75, na.rm = TRUE)
-    rand_median_q975 <- quantile(sim_tbl$median_nnd_rand, 0.975, na.rm = TRUE)
-    
+    # Qunatiles of simulated transformed mean NNDs
+    rand_mean_transform_q025 <- quantile(sim_tbl$mean_nnd_transform_rand, 0.025, na.rm = TRUE)
+    rand_mean_transform_q25  <- quantile(sim_tbl$mean_nnd_transform_rand, 0.25, na.rm = TRUE)
+    rand_mean_transform_q50  <- quantile(sim_tbl$mean_nnd_transform_rand, 0.50, na.rm = TRUE)
+    rand_mean_transform_q75  <- quantile(sim_tbl$mean_nnd_transform_rand, 0.75, na.rm = TRUE)
+    rand_mean_transform_q975 <- quantile(sim_tbl$mean_nnd_transform_rand, 0.975, na.rm = TRUE)
+
+    # Quantiles of simulated transformed median NNDs
+    rand_median_transform_q025 <- quantile(sim_tbl$median_nnd_transform_rand, 0.025, na.rm = TRUE)
+    rand_median_transform_q25  <- quantile(sim_tbl$median_nnd_transform_rand, 0.25, na.rm = TRUE)
+    rand_median_transform_q50  <- quantile(sim_tbl$median_nnd_transform_rand, 0.50, na.rm = TRUE)
+    rand_median_transform_q75  <- quantile(sim_tbl$median_nnd_transform_rand, 0.75, na.rm = TRUE)
+    rand_median_transform_q975 <- quantile(sim_tbl$median_nnd_transform_rand, 0.975, na.rm = TRUE)
+
     # Store summary statistics for this time step
     summary_list[[length(summary_list) + 1]] <- tibble(lek_id = lek, date_prev = date_prev, date_curr = date_curr,
                                                        n_prev = nrow(pts_prev), n_curr = nrow(pts_curr), 
                                                        n_curr_in_prev_core = nrow(pts_curr_in_core),
                                                        obs_mean_nnd = obs_mean, obs_median_nnd = obs_median,
-                                                       rand_mean_nnd_q025 = as.numeric(rand_mean_q025),
-                                                       rand_mean_nnd_q25 = as.numeric(rand_mean_q25),
-                                                       rand_mean_nnd_q50 = as.numeric(rand_mean_q50),
-                                                       rand_mean_nnd_q75 = as.numeric(rand_mean_q75),
-                                                       rand_mean_nnd_q975 = as.numeric(rand_mean_q975),
-                                                       rand_median_nnd_q025 = as.numeric(rand_median_q025),
-                                                       rand_median_nnd_q25 = as.numeric(rand_median_q25),
-                                                       rand_median_nnd_q50 = as.numeric(rand_median_q50),
-                                                       rand_median_nnd_q75 = as.numeric(rand_median_q75),
-                                                       rand_median_nnd_q975 = as.numeric(rand_median_q975))
+                                                       rand_mean_transform_nnd_q025 = as.numeric(rand_mean_transform_q025),
+                                                       rand_mean_transform_nnd_q25 = as.numeric(rand_mean_transform_q25),
+                                                       rand_mean_transform_nnd_q50 = as.numeric(rand_mean_transform_q50),
+                                                       rand_mean_transform_nnd_q75 = as.numeric(rand_mean_transform_q75),
+                                                       rand_mean_transform_nnd_q975 = as.numeric(rand_mean_transform_q975),
+                                                       rand_median_transform_nnd_q025 = as.numeric(rand_median_transform_q025),
+                                                       rand_median_transform_nnd_q25 = as.numeric(rand_median_transform_q25),
+                                                       rand_median_transform_nnd_q50 = as.numeric(rand_median_transform_q50),
+                                                       rand_median_transform_nnd_q75 = as.numeric(rand_median_transform_q75),
+                                                       rand_median_transform_nnd_q975 = as.numeric(rand_median_transform_q975))
     
     # Store point-level NNDs for current points within the KDE core from previous year's points
     pointwise_list[[length(pointwise_list) + 1]] <- pts_curr_in_core %>%
-      mutate(lek_id = lek, date_prev = date_prev, date_curr = date_curr, nnd_to_prev = obs_nnd) %>% st_drop_geometry()
+      mutate(lek_id = lek, date_prev = date_prev, date_curr = date_curr, point_id = seq_along(obs_nnd),
+             nnd_to_prev = obs_nnd, dist_from_centre = dist_from_centre) %>% st_drop_geometry()
     
     # Store simulation output for the same transition
     sim_list[[length(sim_list) + 1]] <- sim_tbl %>%
       mutate(lek_id = lek, date_prev = date_prev, date_curr = date_curr)
-    
+
     # Store point-level simulation output for the same transition
-    sim_pointwise_list[[length(sim_pointwise_list) + 1]] <- sim_pointwise_tbl %>%
-      mutate(lek_id = lek, date_prev = date_prev, date_curr = date_curr)
+    pointwise_randomisation_list[[length(pointwise_randomisation_list) + 1]] <- sim_pointwise_tbl %>%
+      mutate(lek_id = lek, date_prev = date_prev, date_curr = date_curr,
+             dist_from_centre = dist_from_centre[point_id])
   }
 }
 
 summary_tbl <- bind_rows(summary_list) %>% arrange(lek_id, date_curr)
 pointwise_tbl <- bind_rows(pointwise_list) %>% arrange(lek_id, date_curr)
 sim_tbl_all <- bind_rows(sim_list) %>% arrange(lek_id, date_curr, sim)
-sim_pointwise_tbl_all <- bind_rows(sim_pointwise_list) %>% arrange(lek_id, date_curr, null_type, sim, point_id)
+pointwise_randomisation_tbl <- bind_rows(pointwise_randomisation_list) %>% arrange(lek_id, date_curr, sim, point_id)
 
 ## Export dataframes
 summary_tbl <- summary_tbl %>%
@@ -416,20 +400,18 @@ summary_tbl <- summary_tbl %>%
 
 simulation_tbl <- sim_tbl_all %>%
   transmute(lek_id, date_prev, date_now = date_curr, sim, 
-            mean_crossyear_nnd_rand = mean_nnd_rand, median_crossyear_nnd_rand = median_nnd_rand,
             mean_crossyear_nnd_transform_rand = mean_nnd_transform_rand,
             median_crossyear_nnd_transform_rand = median_nnd_transform_rand)
+
+pointwise_randomisation_tbl <- pointwise_randomisation_tbl %>%
+  transmute(lek_id, date_prev, date_now = date_curr, sim, point_id, nnd_to_prev, dist_from_centre)
 
 crossyear_nnd_tbl <- simulation_tbl %>%
   left_join(summary_tbl, by = c("lek_id", "date_prev", "date_now")) %>%
   relocate(lek_id, date_prev, date_now, n_curr_in_prev_core, sim, mean_crossyear_nnd, median_crossyear_nnd,
-           mean_crossyear_nnd_rand, median_crossyear_nnd_rand,
            mean_crossyear_nnd_transform_rand, median_crossyear_nnd_transform_rand)
-
-sim_pointwise_tbl_all <- sim_pointwise_tbl_all %>%
-  transmute(lek_id, date_prev, date_now = date_curr, sim, null_type, point_id, nnd_to_prev)
 
 write_csv(summary_tbl, file.path(out_dir, "crossyear_nnd_summary.csv"))
 write_csv(pointwise_tbl, file.path(out_dir, "crossyear_nnd_pointwise.csv"))
+write_csv(pointwise_randomisation_tbl, file.path(out_dir, "crossyear_nnd_pointwise_randomisations.csv"))
 write_csv(crossyear_nnd_tbl, file.path(out_dir, "crossyear_nnd_with_randomisations.csv"))
-write_csv(sim_pointwise_tbl_all, file.path(out_dir, "crossyear_nnd_pointwise_randomisations.csv"))

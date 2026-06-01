@@ -2,3 +2,4 @@
 *.RHistory
 *.ipynb_checkpoints
 *build
+processed_data/*
