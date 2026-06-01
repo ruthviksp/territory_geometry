@@ -30,9 +30,12 @@ parse_label_to_date <- function(data_label, month_lookup) {
 root_dir <- "/Users/vivekhsridhar/Library/Mobile Documents/com~apple~CloudDocs/Documents/Data/SatelliteImagery/GoogleEarth"
 setwd(root_dir)
 
-## Output folder
+## Output folders
 out_dir <- file.path(script_dir, "processed_data")
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+plot_dir <- file.path(script_dir, "output")
+dir.create(plot_dir, showWarnings = FALSE, recursive = TRUE)
 
 ## Lek configurations
 lek_configs <- tibble(
@@ -41,6 +44,8 @@ lek_configs <- tibble(
   suffix   = c("TC", "LEK1", "LEK2"),
   shp_file = c("TalChhapar_Area.shp", "Velavadar_Lek1_Area.shp", "Velavadar_Lek2_Area.shp")
 )
+
+plot_crossyear = FALSE
 
 ## Build master table of all files across all leks
 files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
@@ -69,8 +74,8 @@ files_tbl <- map_dfr(seq_len(nrow(lek_configs)), function(i) {
 
 ## ANALYSIS PARAMETERS
 ## KDE settings
-core_prob <- 0.75
-kde_dimyx <- 256
+core_prob <- 0.8
+kde_dimyx <- 512
 min_points_kde <- 10
 
 ## Null simulation settings
@@ -144,6 +149,32 @@ subset_points_to_kde_core <- function(pts_sf, kde_grid) {
     mutate(in_core = ifelse(is.na(in_core), FALSE, in_core)) %>% pull(in_core)
   
   pts_sf[inside, ]
+}
+
+## Plot current-year point pattern against the previous-year KDE core
+plot_crossyear_core_overlap <- function(kde_grid, lek_polygon, pts_prev, pts_curr, pts_curr_in_core,
+                                        lek, date_prev, date_curr, plot_dir, plot_limits) {
+
+  # Keep only KDE grid cells that define the previous-year core
+  core_df <- kde_grid$kde_df %>% filter(in_core)
+
+  # Make a safe file name for this transition
+  safe_lek <- gsub("[^A-Za-z0-9]+", "_", lek)
+  out_file <- file.path(plot_dir, paste0("core_overlap_", safe_lek, "_",
+                                         format(as.Date(date_prev), "%Y%m"), "_to_",
+                                         format(as.Date(date_curr), "%Y%m"), ".png"))
+
+  # Plot the previous-year core, previous points, current points and points used in the computation
+  p <- ggplot() +
+    geom_tile(data = core_df, aes(x = x, y = y), width = kde_grid$xstep, height = kde_grid$ystep, fill = "#C49102", alpha = 0.4) +
+    geom_sf(data = pts_curr, colour = "black", size = 1.2, alpha = 0.6) +
+    geom_sf(data = pts_curr_in_core, colour = "#B5542D", size = 1.2) +
+    coord_sf(xlim = plot_limits$xlim, ylim = plot_limits$ylim, expand = FALSE) + theme_classic(base_size = 11) +
+    theme(plot.title = element_text(face = "bold"),
+          axis.text = element_text(size = 8),
+          axis.title = element_text(size = 10))
+
+  ggsave(out_file, p, width = 5, height = 5, dpi = 300)
 }
 
 ## Compute distance of points from the KDE mode
@@ -300,6 +331,25 @@ pointwise_randomisation_list <- list()
 ## Split the file table by lek
 files_by_lek <- split(files_tbl, files_tbl$lek_id)
 
+## Compute fixed plot limits around all points for each lek
+plot_limits_by_lek <- map(names(files_by_lek), function(lek) {
+
+  files_lek <- files_by_lek[[lek]]
+
+  all_xy <- map_dfr(seq_len(nrow(files_lek)), function(i) {
+    pts <- pts_by_lek_year[[paste(files_lek$lek_id[i], files_lek$date[i], sep = "__")]]
+    xy <- st_coordinates(pts)
+    tibble(x = xy[, 1], y = xy[, 2])
+  })
+
+  pad <- 20
+
+  list(xlim = c(min(all_xy$x) - pad, max(all_xy$x) + pad),
+       ylim = c(min(all_xy$y) - pad, max(all_xy$y) + pad))
+})
+
+names(plot_limits_by_lek) <- names(files_by_lek)
+
 ## For each lek
 for (lek in names(files_by_lek)) {
   
@@ -328,6 +378,16 @@ for (lek in names(files_by_lek)) {
     
     # Keep only current-year points inside previous-year KDE core
     pts_curr_in_core <- subset_points_to_kde_core(pts_curr, kde_prev)
+    
+    # Plot current-year point pattern against the previous-year KDE core
+    if (plot_crossyear == TRUE) {
+      plot_crossyear_core_overlap(kde_grid = kde_prev, lek_polygon = lek_polygon,
+                                  pts_prev = pts_prev, pts_curr = pts_curr,
+                                  pts_curr_in_core = pts_curr_in_core,
+                                  lek = lek, date_prev = date_prev,
+                                  date_curr = date_curr, plot_dir = plot_dir,
+                                  plot_limits = plot_limits_by_lek[[lek]])
+    }
     
     # Compute nearest-neighbour distance from current to previous points
     obs_nnd <- nnd(pts_curr_in_core, pts_prev)
