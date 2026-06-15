@@ -2,3 +2,4 @@
 *.RHistory
 *.ipynb_checkpoints
 *build
+compute_stability_kde_core.R
