@@ -3,3 +3,17 @@
 *.ipynb_checkpoints
 *build
 compute_stability_kde_core.R
+compute_nnd_metrics.R
+compute_pcf.R
+compute_stability.R
+compute_stability_corrected.R
+compute_stability_kde_core.R
+model_nnd_metrics.ipynb
+model_pcf.ipynb
+model_timeseries.ipynb
+plot_lek_transition.ipynb
+plot_pcf.ipynb
+plot_pcf.R
+plot_stability.ipynb
+plot_stability.R
+schematic_pcf.ipynb
